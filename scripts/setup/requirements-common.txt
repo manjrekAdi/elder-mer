@@ -1,0 +1,54 @@
+# Common Python dependencies for elder-mer (identical on M4 and Atlas).
+# PyTorch is NOT listed here: it is installed per-machine by the setup
+# scripts (MPS build on the M4, CUDA 12.8 build on Atlas) because the
+# correct wheel differs by platform.
+
+# --- core DL / NLP ---
+transformers==4.44.2          # BERT-base text encoder; pin avoids API drift
+tokenizers==0.19.1
+huggingface-hub==0.24.6
+accelerate==0.33.0
+sentencepiece==0.2.0
+
+# --- ASR (Whisper large-v3) ---
+# NOTE: openai-whisper is installed by the setup scripts with
+# --no-build-isolation (its build expects setuptools/pkg_resources already
+# present). It is intentionally NOT listed here. It provides the per-token
+# logprobs the ASR-aware text branch depends on.
+ffmpeg-python==0.2.0          # Whisper needs the ffmpeg binary too (installed by the setup script)
+
+# --- audio features (wav2vec 2.0 lives in transformers; these are for I/O + prosody) ---
+librosa==0.10.2.post1
+soundfile==0.12.1
+audioread==3.0.1
+
+# --- numerical / data ---
+numpy==1.26.4                 # <2.0 on purpose: several audio libs are not yet 2.x-clean
+pandas==2.2.2
+scipy==1.13.1
+scikit-learn==1.5.1
+
+# --- experiment tracking / config ---
+wandb==0.17.7
+pyyaml==6.0.2
+omegaconf==2.3.0              # typed YAML configs
+
+# --- evaluation / metrics ---
+jiwer==3.0.4                  # word error rate (WER) computation for H1
+tabulate==0.9.0
+matplotlib==3.9.2
+seaborn==0.13.2
+
+# --- utilities ---
+tqdm==4.66.5
+einops==0.8.0
+rich==13.8.0
+
+# --- dev / testing (used by src/evaluation tests in the plan) ---
+pytest==8.3.2
+black==24.8.0
+ruff==0.6.3
+
+# NOTE: OpenFace (video action units) is NOT a pip package. It is a separate
+# C++ toolkit installed outside conda. The setup scripts print a reminder;
+# see scripts/setup/README for the OpenFace install path on each machine.
