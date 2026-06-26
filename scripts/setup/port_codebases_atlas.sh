@@ -47,10 +47,11 @@
 set -uo pipefail   # NOT -e: we want to capture failures per-step, not abort
 
 # ---- args -------------------------------------------------------------------
-# Atlas storage policy: code/repos/conda-envs on /data0 (NOT /home, NOT /data1).
+# Atlas storage (this account): $HOME is on the /data0 volume
+# (/home/manjrek5 -> /data0/home/manjrek5, admin-confirmed), so repos + the
+# isolated port conda-envs live under $HOME -- the correct volume.
 ONLY=""
-CODE_ROOT="/data0/users/$(whoami)"
-WORKDIR="$CODE_ROOT/elder-mer-ports"
+WORKDIR="$HOME/elder-mer-ports"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --only)    ONLY="$2"; shift 2 ;;
@@ -92,10 +93,8 @@ if ! command -v conda >/dev/null 2>&1; then
 else
   eval "$(conda shell.bash hook)"
 fi
-# Keep the multi-GB port envs on /data0, off the /home quota (Atlas policy).
-mkdir -p "$CODE_ROOT/conda-envs" "$CODE_ROOT/conda-pkgs"
-conda config --prepend envs_dirs "$CODE_ROOT/conda-envs" >/dev/null 2>&1 || true
-conda config --prepend pkgs_dirs "$CODE_ROOT/conda-pkgs" >/dev/null 2>&1 || true
+# Port envs are created under ~/miniconda3/envs, i.e. on /data0/home for this
+# account -- the correct volume, no redirection needed.
 
 # =============================================================================
 # Shared helpers

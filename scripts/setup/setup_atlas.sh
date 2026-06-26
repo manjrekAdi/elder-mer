@@ -26,14 +26,12 @@ set -uo pipefail   # NOT -e: optional steps (MER2023) may fail without aborting
 ENV_NAME="elder-mer"
 PY_VERSION="3.11"
 REPO_URL="https://github.com/manjrekAdi/elder-mer.git"
-# Atlas storage policy (see datamininglab-yorku/Atlas docs):
-#   /home          (~200 GB) -- config + tiny scripts ONLY
-#   /data0/users/$USER (200 GB) -- code, git repos, CONDA ENVS, logs
-#   /data1/users/$USER (750 GB, = ~/data) -- datasets, checkpoints, outputs
-# So: repo + conda envs live on /data0; datasets/MER2023 stay on ~/data (/data1).
-CODE_ROOT="/data0/users/$(whoami)"
-REPO_DIR="$CODE_ROOT/elder-mer"
-CONDA_ENVS_DIR="$CODE_ROOT/conda-envs"
+# Atlas storage (this account, per admin Hamidreza 2026-05-27): the /data0
+# allocation IS the home dir -- /home/manjrek5 is bind-mounted to
+# /data0/home/manjrek5, and there is NO /data0/users/manjrek5. So $HOME already
+# lives on the /data0 volume (~200 GB): code + conda envs go in $HOME, while
+# datasets/checkpoints go on ~/data (-> /data1/users, 750 GB).
+REPO_DIR="$HOME/elder-mer"
 DATA_ROOT="$HOME/data/elder-mer-data"
 
 step()  { echo; echo "==> $*"; }
@@ -90,13 +88,8 @@ if ! command -v conda >/dev/null 2>&1; then
 else
   eval "$(conda shell.bash hook)"
 fi
-# Atlas policy: conda ENVS + pkg cache belong on /data0, not /home. Miniconda
-# base stays in ~ (per the Atlas install guide), but redirect envs/pkgs so the
-# multi-GB cu128-torch envs don't eat the 200 GB home quota.
-mkdir -p "$CONDA_ENVS_DIR" "$CODE_ROOT/conda-pkgs"
-conda config --prepend envs_dirs "$CONDA_ENVS_DIR" >/dev/null 2>&1 || true
-conda config --prepend pkgs_dirs "$CODE_ROOT/conda-pkgs" >/dev/null 2>&1 || true
-ok "conda envs -> $CONDA_ENVS_DIR (pkgs -> $CODE_ROOT/conda-pkgs)"
+# Miniconda base + envs live under ~/miniconda3 (i.e. on /data0/home for this
+# account), which is the correct volume -- no envs_dirs redirection needed.
 if ! conda env list | grep -qE "(^|/)$ENV_NAME\s"; then
   conda create -y -n "$ENV_NAME" "python=$PY_VERSION"
 fi
@@ -135,8 +128,7 @@ pip install -q peft "huggingface_hub[cli]" faster-whisper
 ok "python stack installed"
 
 # --- 4. repo -----------------------------------------------------------------
-step "[4/6] Repo at $REPO_DIR  (on /data0 per Atlas storage policy)"
-mkdir -p "$CODE_ROOT"
+step "[4/6] Repo at $REPO_DIR  (in \$HOME, on the /data0 volume)"
 if [[ -d "$REPO_DIR/.git" ]]; then
   git -C "$REPO_DIR" pull --ff-only || warn "pull failed (local changes?) -- continuing"
 else
@@ -248,8 +240,8 @@ fi
 echo
 echo "============================================================"
 echo "ATLAS SETUP COMPLETE"
-echo "  env        : conda activate $ENV_NAME   (envs on /data0)"
-echo "  repo       : $REPO_DIR   (/data0)"
+echo "  env        : conda activate $ENV_NAME"
+echo "  repo       : $REPO_DIR   (in \$HOME, on the /data0 volume)"
 echo "  data       : $DATA_ROOT (= ~/data -> /data1; symlinked as repo data/)"
 echo
 echo "Remaining manual steps:"
