@@ -100,35 +100,41 @@ fi
 # Shared helpers
 # =============================================================================
 
-# make_env <env_name> <python_version>  -- create if missing, then activate
+# make_env <env_name> <python_version>  -- create the env if missing.
+# IMPORTANT: callers run piped to `tee` (a subshell), so `conda activate` would
+# NOT persist back to them. We therefore do NOT activate; every later step uses
+# the env's python by absolute path ($HOME/miniconda3/envs/<env>/bin/python).
 make_env() {
   local env="$1" py="$2"
-  if ! conda env list | grep -qE "^$env\s"; then
+  if ! conda env list | grep -qE "(^|/)$env\s"; then
     echo "    creating conda env '$env' (python $py) ..."
-    conda create -y -n "$env" "python=$py" >/dev/null 2>&1 \
+    conda create -y -n "$env" "python=$py" pip >/dev/null 2>&1 \
       || { fail "could not create env $env"; return 1; }
   fi
-  conda activate "$env" || { fail "could not activate $env"; return 1; }
-  ok "env '$env' active (python $(python -V 2>&1 | cut -d' ' -f2))"
+  local epy="$HOME/miniconda3/envs/$env/bin/python"
+  [[ -x "$epy" ]] || { fail "env python missing at $epy"; return 1; }
+  ok "env '$env' ready (python $("$epy" -V 2>&1 | cut -d' ' -f2), via explicit path)"
 }
 
-# install_cu128_torch  -- cu128 torch, only if not already the active build
+# install_cu128_torch <envpy>  -- cu128 torch into THAT env, if not already there
 install_cu128_torch() {
-  if python - <<'PY' 2>/dev/null
+  local epy="$1"
+  if "$epy" - <<'PY' 2>/dev/null
 import torch,sys
 sys.exit(0 if (torch.version.cuda or "").startswith("12.8") else 1)
 PY
   then ok "cu128 torch already present"; return 0; fi
-  python -m pip install -q --upgrade pip setuptools wheel >/dev/null 2>&1
+  "$epy" -m pip install -q --upgrade pip setuptools wheel >/dev/null 2>&1
   echo "    installing cu128 torch (this is the Blackwell-capable build) ..."
-  python -m pip install -q torch torchvision torchaudio --index-url "$CU128_INDEX" \
+  "$epy" -m pip install -q torch torchvision torchaudio --index-url "$CU128_INDEX" \
     || { fail "cu128 torch install failed"; return 1; }
   ok "cu128 torch installed"
 }
 
-# gpu_smoke  -- assert sm_120 visible + matmul runs in the ACTIVE env
+# gpu_smoke <envpy>  -- assert sm_120 visible + matmul runs in THAT env
 gpu_smoke() {
-  python - <<'PY'
+  local epy="$1"
+  "$epy" - <<'PY'
 import torch, sys
 assert torch.cuda.is_available(), "CUDA not available in this env"
 cap = torch.cuda.get_device_capability(0)
@@ -141,11 +147,12 @@ if cap < (12, 0):
 PY
 }
 
-# lora_step  -- the decisive "one LoRA training step" gate, run with the
-#   ACTIVE env's transformers+peft+cu128 torch. distilgpt2 keeps it tiny and
+# lora_step <envpy>  -- the decisive "one LoRA training step" gate, run with
+#   THAT env's transformers+peft+cu128 torch. distilgpt2 keeps it tiny and
 #   network-light; what we're really testing is the dependency+kernel stack.
 lora_step() {
-  python - <<'PY'
+  local epy="$1"
+  "$epy" - <<'PY'
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from peft import LoraConfig, get_peft_model
@@ -176,18 +183,20 @@ clone() {
 run_port() {
   local name="$1" env="$2" py="$3" url="$4" dir="$5" deps="$6" traincmd="$7"
   local log="$LOGDIR/$name.log"
+  local epy="$HOME/miniconda3/envs/$env/bin/python"   # use the env by abs path
   step "[$name] porting to cu128 / sm_120   (full log: $log)"
   : > "$log"
 
   clone "$url" "$dir"        2>&1 | tee -a "$log"
   make_env "$env" "$py"      2>&1 | tee -a "$log" || { VERDICTS+=("$name=FAIL(env)"); return; }
-  install_cu128_torch        2>&1 | tee -a "$log" || { VERDICTS+=("$name=FAIL(torch)"); return; }
+  install_cu128_torch "$epy" 2>&1 | tee -a "$log" || { VERDICTS+=("$name=FAIL(torch)"); return; }
 
-  # Install the repo's torch-adjacent pins on TOP of cu128 torch. We pass them
-  # explicitly (torch/torchvision/torchaudio/cudatoolkit deliberately omitted)
-  # so pip cannot pull the repo's old sm_120-less torch back in.
+  # Install the repo's torch-adjacent pins on TOP of cu128 torch, into THIS env.
+  # We pass them explicitly (torch/torchvision/torchaudio/cudatoolkit omitted) so
+  # pip cannot pull the repo's old sm_120-less torch back in. -q dropped so the
+  # log shows what actually happened.
   echo "    installing repo deps (torch pins stripped): $deps" | tee -a "$log"
-  if python -m pip install -q $deps 2>&1 | tee -a "$log"; then
+  if "$epy" -m pip install $deps 2>&1 | tee -a "$log"; then
     ok "repo deps installed"
   else
     fail "repo deps could not be installed alongside cu128 torch (pin conflict)"
@@ -199,10 +208,10 @@ run_port() {
 
   # confirm cu128 torch survived the repo-dep install (old pins sometimes
   # silently downgrade it)
-  install_cu128_torch >/dev/null 2>&1
+  install_cu128_torch "$epy" >/dev/null 2>&1
   local g=0 l=0
-  gpu_smoke 2>&1 | tee -a "$log"; g=${PIPESTATUS[0]}
-  lora_step 2>&1 | tee -a "$log"; l=${PIPESTATUS[0]}
+  gpu_smoke "$epy" 2>&1 | tee -a "$log"; g=${PIPESTATUS[0]}
+  lora_step "$epy" 2>&1 | tee -a "$log"; l=${PIPESTATUS[0]}
 
   if [[ $g -eq 0 && $l -eq 0 ]]; then
     ok "$name: LoRA training step runs end-to-end on sm_120 with cu128 torch"
