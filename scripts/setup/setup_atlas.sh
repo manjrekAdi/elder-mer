@@ -88,12 +88,24 @@ if ! command -v conda >/dev/null 2>&1; then
 else
   eval "$(conda shell.bash hook)"
 fi
+# A fresh Miniconda refuses to use the Anaconda defaults channels until their
+# Terms of Service are accepted, which aborts `conda create`/`conda install`
+# non-interactively (CondaToSNonInteractiveError). Accept them up front.
+conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main >/dev/null 2>&1 || true
+conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r    >/dev/null 2>&1 || true
 # Miniconda base + envs live under ~/miniconda3 (i.e. on /data0/home for this
 # account), which is the correct volume -- no envs_dirs redirection needed.
 if ! conda env list | grep -qE "(^|/)$ENV_NAME\s"; then
   conda create -y -n "$ENV_NAME" "python=$PY_VERSION"
 fi
 conda activate "$ENV_NAME"
+# Hard stop if the env didn't take: otherwise the rest installs into base
+# (wrong Python) and pinned wheels like pandas 2.2.2 fail to build.
+if [[ "$CONDA_DEFAULT_ENV" != "$ENV_NAME" ]]; then
+  echo "ERROR: failed to activate '$ENV_NAME' (got '$CONDA_DEFAULT_ENV')." >&2
+  echo "       conda create likely failed -- check the conda ToS output above." >&2
+  exit 1
+fi
 ok "active env: $CONDA_DEFAULT_ENV (python $(python -V 2>&1 | cut -d' ' -f2))"
 
 # ffmpeg (whisper) + git-lfs (CREMA-D) without sudo
@@ -122,9 +134,12 @@ else
   warn "requirements-common.txt not found yet (repo not cloned) -- installed after step 4"
 fi
 # whisper needs setuptools present at build time; peft for LoRA; faster-whisper
-# for the confidence-extraction utility; hf CLI for gated datasets
+# for the confidence-extraction utility. Do NOT upgrade huggingface_hub here:
+# requirements pins it to 0.24.6 and transformers 4.44.2 needs <1.0, so an
+# unpinned `huggingface_hub[cli]` would pull 1.x and break transformers. The
+# `huggingface-cli` command (used for gated datasets) ships with 0.24.6 anyway.
 pip install -q --no-build-isolation openai-whisper
-pip install -q peft "huggingface_hub[cli]" faster-whisper
+pip install -q peft faster-whisper
 ok "python stack installed"
 
 # --- 4. repo -----------------------------------------------------------------
