@@ -141,12 +141,14 @@ else
   warn "requirements-common.txt not found yet (repo not cloned) -- installed after step 4"
 fi
 # whisper needs setuptools present at build time; peft for LoRA; faster-whisper
-# for the confidence-extraction utility. Do NOT upgrade huggingface_hub here:
-# requirements pins it to 0.24.6 and transformers 4.44.2 needs <1.0, so an
-# unpinned `huggingface_hub[cli]` would pull 1.x and break transformers. The
-# `huggingface-cli` command (used for gated datasets) ships with 0.24.6 anyway.
+# for the confidence-extraction utility. Pin peft to the 2024-era release that
+# matches the locked stack: an unpinned peft pulls 0.19.x, which requires
+# huggingface_hub>=0.25 and breaks against the pinned 0.24.6 (and bumping
+# huggingface_hub past <1.0 would break transformers 4.44.2). peft 0.12.0 works
+# with huggingface_hub 0.24.6 and transformers 4.44.2. (huggingface-cli, used
+# for gated datasets, ships with 0.24.6.)
 pip install -q --no-build-isolation openai-whisper
-pip install -q peft faster-whisper
+pip install -q "peft==0.12.0" faster-whisper
 ok "python stack installed"
 
 # --- 4. repo -----------------------------------------------------------------
@@ -253,8 +255,11 @@ print(f"    LoRA step: ok (loss {out.loss.item():.3f}, {n:,} trainable params)")
 print("    TASK 1.5 SMOKE TEST PASSED: cu128 training stack works on this GPU.")
 EOF
 if [[ $? -ne 0 ]]; then
-  echo "ERROR: LoRA smoke test failed -- the cu128 wheel may lag this GPU." >&2
-  echo "       Check pytorch.org for a newer build and flag to Hamidreza." >&2
+  echo "ERROR: LoRA smoke test failed." >&2
+  echo "       If the matmul above PASSED, this is a Python dependency mismatch" >&2
+  echo "       (peft / transformers / huggingface_hub versions), NOT the GPU --" >&2
+  echo "       read the traceback above. Only if the matmul FAILED is the cu128" >&2
+  echo "       wheel suspect; then check pytorch.org and flag to Hamidreza." >&2
   exit 1
 fi
 
