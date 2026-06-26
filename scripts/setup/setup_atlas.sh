@@ -93,6 +93,13 @@ fi
 # non-interactively (CondaToSNonInteractiveError). Accept them up front.
 conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main >/dev/null 2>&1 || true
 conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r    >/dev/null 2>&1 || true
+# This account has no /data0/users/manjrek5; a pre-existing ~/.condarc (Atlas
+# admin default) may point pkgs_dirs/envs_dirs there -- a path we cannot create
+# -- which fails conda create with NoWritablePkgsDirError. Force conda to use
+# the writable miniconda dirs under $HOME (which is on the /data0/home volume).
+mkdir -p "$HOME/miniconda3/pkgs" "$HOME/miniconda3/envs"
+conda config --prepend pkgs_dirs "$HOME/miniconda3/pkgs" >/dev/null 2>&1 || true
+conda config --prepend envs_dirs "$HOME/miniconda3/envs" >/dev/null 2>&1 || true
 # Miniconda base + envs live under ~/miniconda3 (i.e. on /data0/home for this
 # account), which is the correct volume -- no envs_dirs redirection needed.
 if ! conda env list | grep -qE "(^|/)$ENV_NAME\s"; then
