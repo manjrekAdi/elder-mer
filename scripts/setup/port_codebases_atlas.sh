@@ -206,6 +206,13 @@ run_port() {
     return
   fi
 
+  # Old pinned stacks (e.g. accelerate 0.20.3) `import pkg_resources` at load
+  # time, which modern setuptools (>=81) no longer ships -> ModuleNotFoundError.
+  # Backfill a setuptools that still bundles it, without disturbing torch.
+  "$epy" -c "import pkg_resources" 2>/dev/null \
+    || { echo "    backfilling pkg_resources (setuptools<81) for old deps" | tee -a "$log"
+         "$epy" -m pip install -q "setuptools<81" >/dev/null 2>&1 || true; }
+
   # confirm cu128 torch survived the repo-dep install (old pins sometimes
   # silently downgrade it)
   install_cu128_torch "$epy" >/dev/null 2>&1
