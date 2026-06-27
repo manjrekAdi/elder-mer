@@ -97,13 +97,20 @@ media) to Atlas.
   build fixes were needed (documented in the root `README.md`):
   `OpenBLAS_HOME` env var, `stdc++fs` link guard, prefer `std::filesystem`
   over Boost.
-- [ ] **1.5 Codebase porting pass (Blackwell fit).** `[Atlas]`
-  Emotion-LLaMA and TiCAL pin older PyTorch/CUDA stacks that lack sm_120
-  kernels. Rebuild each against cu128 wheels on Atlas and **confirm one
-  LoRA training step runs end-to-end** before committing to the full
-  pipeline. This is the go/no-go on reusing their code vs. reimplementing
-  the projector+LoRA recipe. Must run on Atlas — the whole point is
-  validating the target GPU.
+- [x] **1.5 Codebase porting pass (Blackwell fit) — RESULT: GO.** `[Atlas]`
+  Done 2026-06-27 (`scripts/setup/port_codebases_atlas.sh`). Emotion-LLaMA
+  and TiCAL pin older PyTorch (2.0.0 / 2.3.1) lacking sm_120 kernels; rebuilt
+  each in an isolated conda env against cu128 torch + their own pinned deps,
+  and **a LoRA training step ran end-to-end on the RTX PRO 6000 Blackwell
+  (sm_120)** for both. Verdict: reuse is viable (no need to reimplement the
+  projector+LoRA recipe). Per-repo gotchas the script now handles: install
+  via each env's python by abs path (conda activate doesn't survive a `tee`
+  subshell); backfill `setuptools<81` for old `accelerate`'s `pkg_resources`;
+  and for peft 0.2.0 set `lora_dropout` explicitly + move model to GPU after
+  adapter injection. NOT yet run: each repo's real `train.py` on weights/data
+  (needs LLaMA-2-7B + MiniGPT-v2 ckpt / MOSEI feats) — that's Phase 3.
+  Atlas env built by `setup_atlas.sh`: conda env `elder-mer` (py3.11),
+  torch 2.11.0+cu128, repo at `~/elder-mer`, data on `~/data` (-> /data1).
 - [ ] **1.6 Set up experiment tracking.** `[M4→Atlas]` `wandb login` on
   both machines; on Atlas, set the cache env vars so HF/Whisper downloads
   land on the 750 GB data volume.
