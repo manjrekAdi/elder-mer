@@ -160,7 +160,12 @@ import transformers, peft
 print(f"    transformers {transformers.__version__}  peft {peft.__version__}")
 tok = AutoTokenizer.from_pretrained("distilgpt2")
 model = AutoModelForCausalLM.from_pretrained("distilgpt2").cuda()
-model = get_peft_model(model, LoraConfig(r=8, target_modules=["c_attn"]))
+# Set lora_alpha + lora_dropout EXPLICITLY: peft 0.2.0 (Emotion-LLaMA's pin)
+# defaults lora_dropout to None and then does `if lora_dropout > 0.0`, which
+# TypeErrors. Modern peft defaults it to 0.0. Passing it keeps this generic
+# gate valid across every repo's pinned peft version.
+model = get_peft_model(model, LoraConfig(r=8, lora_alpha=16, lora_dropout=0.0,
+                                         target_modules=["c_attn"]))
 n = sum(p.numel() for p in model.parameters() if p.requires_grad)
 batch = tok(["Emotion recognition for older adults."]*2, return_tensors="pt").to("cuda")
 out = model(**batch, labels=batch["input_ids"]); out.loss.backward()
