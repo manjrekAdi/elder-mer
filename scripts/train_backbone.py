@@ -250,7 +250,11 @@ def run(args):
     device = (args.device if args.device != "auto" else
               "mps" if torch.backends.mps.is_available()
               else "cuda" if torch.cuda.is_available() else "cpu")
-    dtype = torch.float16 if (args.fp16 and device == "cuda") else torch.float32
+    dtype = {"float32": torch.float32, "float16": torch.float16,
+             "bfloat16": torch.bfloat16}[args.dtype]
+    if device == "cuda":
+        torch.backends.cuda.matmul.allow_tf32 = True   # faster fp32 matmuls, no real precision cost
+        torch.backends.cudnn.allow_tf32 = True
 
     train_rows, val_rows, test_rows = fold_split(rows, args.n_folds, args.fold, args.seed)
     print(f"[3.2] fold {args.fold}/{args.n_folds} | device={device} | llm={args.llm}")
@@ -343,7 +347,9 @@ def main():
     ap.add_argument("--d-model", type=int, default=256, help="projector inner width")
     ap.add_argument("--n-heads", type=int, default=4)
     ap.add_argument("--device", default="auto")
-    ap.add_argument("--fp16", action="store_true", help="fp16 LLM (CUDA only)")
+    ap.add_argument("--dtype", choices=["float32", "float16", "bfloat16"], default="float32",
+                    help="LLM compute dtype: float32 (default, MPS/dev) | bfloat16 (7B on CUDA, "
+                         "stable, no grad-scaler needed) | float16")
     ap.add_argument("--limit", type=int, default=0, help="subset clips (smoke test)")
     ap.add_argument("--max-steps", type=int, default=0, help="stop after N optimizer steps (smoke test)")
     ap.add_argument("--workers", type=int, default=0,
