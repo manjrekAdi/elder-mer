@@ -203,7 +203,17 @@ space; LoRA on the LLM. Encoders and LLM body stay frozen throughout.
   failure mode), and the encoder-reliability gate (Contribution 2) needs
   in-the-wild ElderReact degradation to act on. Outputs:
   `data/crema_d/exp1_qwen0.5b/` (per-fold predictions/metrics + analysis/).
-  TODO: re-run on LLaMA-2-7B (Atlas) to confirm the gap holds at scale.
+  **7B CONFIRMATION (Atlas, NousResearch/Llama-2-7b-chat-hf, bf16, 5-fold,
+  2026-06-29):** gap replicates and is robust to model scale. Overall
+  acc=0.690 / macro-F1=0.692 (vs 0.5B's 0.640/0.638 -- the 14x-bigger LLM is
+  +5 pts more accurate), yet the age slope is essentially unchanged: accuracy
+  -0.0232/decade (r=-0.297, p=0.0042) and macro-F1 -0.0245/decade (p=0.0061),
+  both MORE significant than the 0.5B run. Thesis takeaway: **scaling the LLM
+  raises overall accuracy but does NOT close the older-adult gap** -- the
+  degradation is structural, which is what the targeted contributions (gate,
+  calibration) exist to fix, not raw model size. Results:
+  `data/crema_d/exp1_llama7b/` (predictions/metrics/analysis on the Mac; LoRA
+  checkpoints stay on Atlas). Atlas training path now validated end-to-end.
 - [ ] **3.4 Experiment 2 — naive trimodal (+ ASR text, no gating).**
   `[Atlas]` training; `[M4]` Whisper transcription of the text branch.
   All modalities trusted equally; quantifies ungated fusion. Note:
