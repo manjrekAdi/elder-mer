@@ -172,19 +172,38 @@ wav2vec 2.0) + frozen visual encoder (MAE-family or OpenFace features) +
 LLM text embedder; trainable projector mapping non-text features into token
 space; LoRA on the LLM. Encoders and LLM body stay frozen throughout.
 
-- [ ] **3.1 Feature extraction pipeline.** `[M4]` Frozen-encoder features
-  for all of CREMA-D (audio + video), cached to disk so training never
-  touches raw media. Frozen forward passes run fine on MPS; ship the
-  resulting feature tensors to Atlas once.
-- [ ] **3.2 Projector + LoRA training loop.** `[M4→Atlas]` Write and debug
-  the loop locally (tiny subset, a few steps on MPS/CPU just to catch shape
-  bugs); real training on Atlas (the ~2.6M-trainable-param MSE-Adapter
-  efficiency recipe).
-- [ ] **3.3 Experiment 1 — bimodal baseline (audio + video) on CREMA-D.**
-  `[Atlas]` train + inference; `[M4]` the age-covariate evaluation analysis.
-  Establishes the **within-dataset young-vs-old gap**, cleanly attributable
-  to age (same recording setup for all actors). This is the gap all later
-  experiments must close.
+- [x] **3.1 Feature extraction pipeline.** `[M4]` Done 2026-06-29
+  (`scripts/extract_features.py`). Frozen HuBERT-large audio ([T,1024]) +
+  aggregated OpenFace AU-intensity visual ([T,17], with per-frame
+  confidence/success bundled as the Exp-4 gate inputs), all 7,442 CREMA-D
+  clips cached to `data/crema_d/features/` (3.7 GB) + `index.csv`. Verified
+  HuBERT features are deterministic across loads (the pos_conv "newly
+  initialized" warning is benign). Visual encoder is swappable (OpenFace now,
+  VideoMAE a documented drop-in for the absolute-number/published-baseline
+  runs). Raw CREMA-D already rsync'd to Atlas; ship the feature cache up
+  before the 7B run.
+- [x] **3.2 Projector + LoRA training loop.** `[M4→Atlas]` Done 2026-06-29
+  (`scripts/train_backbone.py`). Per-modality attention-pool -> pseudo-tokens
+  -> frozen LLM(+LoRA) -> summary-token classification head (6 emotions).
+  Speaker-independent k-fold by actor (no leakage). 10M/504M trainable =
+  2.00% (the lightweight adapter recipe). LLM is configurable: Qwen2.5-0.5B
+  (open, fast, the "now" dev/iteration backbone) -> LLaMA-2-7B on Atlas (the
+  faithful/published-comparison "later" backbone).
+- [x] **3.3 Experiment 1 — bimodal baseline (audio + video) on CREMA-D —
+  RESULT: age gap CONFIRMED.** `[M4]` Done 2026-06-29 (Qwen2.5-0.5B, 5-fold,
+  `scripts/analyze_exp1_age_gap.py`). Held-out predictions for all 91 actors;
+  overall acc=0.640, macro-F1=0.638. **Continuous per-actor regression on
+  age: accuracy -0.0225/decade (r=-0.264, p=0.011) and macro-F1
+  -0.0252/decade (r=-0.265, p=0.011), both significant**; per-clip
+  correctness~age point-biserial r=-0.062 (p<1e-5). Baseline emotion
+  recognition declines with actor age -- the within-dataset gap is real and
+  age-attributable. NOTE the contrast with Exp 3: OpenFace *tracking
+  confidence* was age-flat, so on clean studio data the gap is at the
+  *expression-readability* level, not encoder tracking (aged-expression
+  failure mode), and the encoder-reliability gate (Contribution 2) needs
+  in-the-wild ElderReact degradation to act on. Outputs:
+  `data/crema_d/exp1_qwen0.5b/` (per-fold predictions/metrics + analysis/).
+  TODO: re-run on LLaMA-2-7B (Atlas) to confirm the gap holds at scale.
 - [ ] **3.4 Experiment 2 — naive trimodal (+ ASR text, no gating).**
   `[Atlas]` training; `[M4]` Whisper transcription of the text branch.
   All modalities trusted equally; quantifies ungated fusion. Note:
