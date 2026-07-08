@@ -92,6 +92,7 @@ class FeatureDataset:
         return {
             "audio": a, "visual": v,
             "label": int(r["label_idx"]),
+            "text": r.get("transcript", ""),   # Exp 2 text channel ("" when unused)
             "stem": r["stem"], "actor_id": r["actor_id"], "age": int(r["age"]),
             "sex": r["sex"], "emotion_code": r["emotion_code"],
         }
@@ -117,7 +118,7 @@ def collate_fn(batch):
     labels = torch.tensor([b["label"] for b in batch], dtype=torch.long)
     meta = [{k: b[k] for k in ("stem", "actor_id", "age", "sex", "emotion_code")} for b in batch]
     return {"audio": audio, "a_mask": a_mask, "visual": visual, "v_mask": v_mask,
-            "labels": labels, "meta": meta}
+            "labels": labels, "text": [b["text"] for b in batch], "meta": meta}
 
 
 # ============================================================================
@@ -161,7 +162,7 @@ def build_modules(torch, readout="head"):
             return self.out_proj(self.norm(a))                   # [B,n_query,d_llm]
 
     class TrimodalLLM(nn.Module):
-        def __init__(self, llm_name, d_model, n_query, n_heads, lora_r, lora_alpha, dtype):
+        def __init__(self, llm_name, d_model, n_query, n_heads, lora_r, lora_alpha, dtype, use_text=False):
             super().__init__()
             llm = load_llm_lora(llm_name, lora_r, lora_alpha, dtype)
             self.llm = llm
@@ -171,18 +172,35 @@ def build_modules(torch, readout="head"):
             self.visual_proj = ModalityProjector(17, d_model, d_llm, n_query, n_heads)
             self.summary = nn.Parameter(torch.randn(1, 1, d_llm) * 0.02)
             self.head = nn.Sequential(nn.LayerNorm(d_llm), nn.Linear(d_llm, NUM_CLASSES))
+            # Experiment 2: optional ASR-text channel. The transcript is embedded by
+            # the LLM's OWN (frozen) text embedder and read alongside the pseudo-tokens.
+            self.use_text = use_text
+            if use_text:
+                from transformers import AutoTokenizer
+                try:
+                    self.tokenizer = AutoTokenizer.from_pretrained(llm_name)
+                except Exception:
+                    self.tokenizer = AutoTokenizer.from_pretrained(llm_name, use_fast=False)
 
-        def forward(self, audio, a_mask, visual, v_mask):
-            B = audio.shape[0]
+        def forward(self, audio, a_mask, visual, v_mask, text=None):
+            B = audio.shape[0]; dev = audio.device
             at = self.audio_proj(audio, a_mask)                  # [B,n_q,d_llm]
             vt = self.visual_proj(visual, v_mask)                # [B,n_q,d_llm]
-            summ = self.summary.expand(B, -1, -1)                # [B,1,d_llm]
-            embeds = torch.cat([at, vt, summ], dim=1)            # [B, 2n_q+1, d_llm]
-            embeds = embeds.to(next(self.llm.parameters()).dtype)
-            attn_mask = torch.ones(embeds.shape[:2], dtype=torch.long, device=embeds.device)
+            parts = [at, vt]
+            masks = [torch.ones(B, at.shape[1], device=dev), torch.ones(B, vt.shape[1], device=dev)]
+            if self.use_text and text is not None:
+                enc = self.tokenizer(list(text), return_tensors="pt", padding=True,
+                                     truncation=True, max_length=64, add_special_tokens=False)
+                temb = self.llm.get_input_embeddings()(enc.input_ids.to(dev)).float()  # [B,T,d_llm]
+                parts.append(temb)
+                masks.append(enc.attention_mask.to(dev))         # [B,T] 1=real word, 0=pad
+            summ = self.summary.expand(B, -1, -1)                # [B,1,d_llm]  (placed LAST)
+            parts.append(summ); masks.append(torch.ones(B, 1, device=dev))
+            embeds = torch.cat(parts, dim=1).to(next(self.llm.parameters()).dtype)
+            attn_mask = torch.cat(masks, dim=1).long()           # masks text padding out
             out = self.llm(inputs_embeds=embeds, attention_mask=attn_mask,
                            output_hidden_states=True)
-            last = out.hidden_states[-1][:, -1, :]               # summary-token state (causal)
+            last = out.hidden_states[-1][:, -1, :]               # summary token (last, always valid)
             return self.head(last.float())
 
     class TrimodalLLMGenerative(nn.Module):
@@ -191,9 +209,10 @@ def build_modules(torch, readout="head"):
         WORD tokens (a verbalizer). Trains only the projectors + LoRA. Returns
         [B,6] logits, identical interface to the head variant, so the training
         loop / metrics / predictions.csv are unchanged."""
-        def __init__(self, llm_name, d_model, n_query, n_heads, lora_r, lora_alpha, dtype):
+        def __init__(self, llm_name, d_model, n_query, n_heads, lora_r, lora_alpha, dtype, use_text=False):
             super().__init__()
             from transformers import AutoTokenizer
+            assert not use_text, "--text is only supported with --readout head"
             self.llm = load_llm_lora(llm_name, lora_r, lora_alpha, dtype)
             d_llm = self.llm.config.hidden_size
             self.d_llm = d_llm
@@ -225,7 +244,7 @@ def build_modules(torch, readout="head"):
                 f"verbalizer tokens collide for {llm_name}: {list(zip(EMOTION_WORDS, emo))}"
             self.register_buffer("emo_token_ids", torch.tensor(emo, dtype=torch.long), persistent=False)
 
-        def forward(self, audio, a_mask, visual, v_mask):
+        def forward(self, audio, a_mask, visual, v_mask, text=None):
             B = audio.shape[0]
             at = self.audio_proj(audio, a_mask)                  # [B,n_q,d_llm]
             vt = self.visual_proj(visual, v_mask)                # [B,n_q,d_llm]
@@ -284,7 +303,7 @@ def evaluate(model, loader, device, torch):
     with torch.no_grad():
         for b in loader:
             logits = model(b["audio"].to(device), b["a_mask"].to(device),
-                           b["visual"].to(device), b["v_mask"].to(device))
+                           b["visual"].to(device), b["v_mask"].to(device), text=b.get("text"))
             pr = torch.softmax(logits, dim=-1).cpu().numpy()
             pred = pr.argmax(1)
             ys += b["labels"].tolist(); ps += pred.tolist()
@@ -305,6 +324,18 @@ def run(args):
         # sample ACROSS actors (index.csv is sorted by clip, so a head-slice
         # would cover only a few actors and collapse the speaker-fold split)
         rows = random.Random(args.seed).sample(rows, args.limit)
+    if args.text:
+        if args.readout != "head":
+            raise SystemExit("[error] --text is only supported with --readout head")
+        tpath = Path(args.transcripts)
+        if not tpath.exists():
+            raise SystemExit(f"[error] --text set but {tpath} not found. "
+                             "Run scripts/transcribe_cremad.py first.")
+        trans = {r["stem"]: r["transcript"] for r in csv.DictReader(open(tpath))}
+        miss = sum(1 for r in rows if not trans.get(r["stem"]))
+        for r in rows:
+            r["transcript"] = trans.get(r["stem"], "")
+        print(f"[text] transcripts attached: {len(rows) - miss}/{len(rows)} clips ({miss} missing)")
     if not rows:
         raise SystemExit(f"[error] no cached clips with both modalities in {feats_dir}/index.csv. "
                          "Run scripts/extract_features.py first.")
@@ -319,7 +350,8 @@ def run(args):
         torch.backends.cudnn.allow_tf32 = True
 
     train_rows, val_rows, test_rows = fold_split(rows, args.n_folds, args.fold, args.seed)
-    print(f"[3.2] fold {args.fold}/{args.n_folds} | device={device} | llm={args.llm} | readout={args.readout}")
+    print(f"[3.2] fold {args.fold}/{args.n_folds} | device={device} | llm={args.llm} | "
+          f"readout={args.readout} | modalities={'A+V+T' if args.text else 'A+V'}")
     print(f"      clips: train={len(train_rows)} val={len(val_rows)} test={len(test_rows)} "
           f"(speaker-independent: "
           f"{len({r['actor_id'] for r in train_rows})}/"
@@ -332,7 +364,7 @@ def run(args):
 
     ModelClass = build_modules(torch, args.readout)
     model = ModelClass(args.llm, args.d_model, args.n_query, args.n_heads,
-                       args.lora_r, args.lora_alpha, dtype).to(device)
+                       args.lora_r, args.lora_alpha, dtype, use_text=args.text).to(device)
     tr, tot = trainable_report(model)
     print(f"      trainable params: {tr:,} / {tot:,} ({100*tr/tot:.2f}%)")
 
@@ -356,7 +388,7 @@ def run(args):
         running, nb = 0.0, 0
         for b in train_loader:
             logits = model(b["audio"].to(device), b["a_mask"].to(device),
-                           b["visual"].to(device), b["v_mask"].to(device))
+                           b["visual"].to(device), b["v_mask"].to(device), text=b.get("text"))
             loss = loss_fn(logits, b["labels"].to(device))
             opt.zero_grad(); loss.backward()
             torch.nn.utils.clip_grad_norm_([p for p in model.parameters() if p.requires_grad], 1.0)
@@ -386,7 +418,9 @@ def run(args):
                         meta["emotion_code"], yt_i, pt_i, EMOTIONS[yt_i], EMOTIONS[pt_i]]
                        + [f"{x:.4f}" for x in pr])
     json.dump({**m, "fold": args.fold, "n_folds": args.n_folds, "llm": args.llm,
-               "readout": args.readout, "best_val_macro_f1": best_val},
+               "readout": args.readout, "text": args.text,
+               "modalities": "audio+video+text" if args.text else "audio+video",
+               "best_val_macro_f1": best_val},
               open(out_dir / "metrics.json", "w"), indent=2)
     print(f"[3.2] fold {args.fold} TEST: {m}")
     print(f"      wrote {out_dir}/predictions.csv + metrics.json + best.pt")
@@ -420,6 +454,11 @@ def main():
     ap.add_argument("--readout", choices=["head", "generative"], default="head",
                     help="head = trained classification head (Type 1); generative = the LLM's own "
                          "LM head over the 6 emotion-word tokens, no added head (Type 2)")
+    ap.add_argument("--text", action="store_true",
+                    help="Experiment 2: add the ASR-text channel (Whisper transcript), naive trimodal. "
+                         "Requires --transcripts and --readout head.")
+    ap.add_argument("--transcripts", default="data/crema_d/transcripts.csv",
+                    help="transcripts CSV from scripts/transcribe_cremad.py (used with --text)")
     ap.add_argument("--seed", type=int, default=42)
     args = ap.parse_args()
     run(args)
