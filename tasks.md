@@ -214,12 +214,22 @@ space; LoRA on the LLM. Encoders and LLM body stay frozen throughout.
   calibration) exist to fix, not raw model size. Results:
   `data/crema_d/exp1_llama7b/` (predictions/metrics/analysis on the Mac; LoRA
   checkpoints stay on Atlas). Atlas training path now validated end-to-end.
-- [ ] **3.4 Experiment 2 — naive trimodal (+ ASR text, no gating).**
-  `[Atlas]` training; `[M4]` Whisper transcription of the text branch.
-  All modalities trusted equally; quantifies ungated fusion. Note:
-  text-channel *gains* are assessed on ElderReact / MPDD-Elderly later —
-  CREMA-D's 12 fixed sentences are emotionally uninformative by
-  construction, so no text benefit is expected there.
+- [x] **3.4 Experiment 2 — naive trimodal (+ ASR text, no gating) — RESULT:
+  text does NOT help on CREMA-D (slightly hurts).** Done 2026-07-08. `[M4]`
+  Whisper (faster-whisper small.en) transcription of all 7,442 clips +
+  per-word confidence (`scripts/transcribe_cremad.py`; the confidence is the
+  ASR-gate input for Exp 4). `[Atlas]` trained Llama-2-7b-chat + head + text
+  (`train_backbone.py --text`, third modality embedded by the LLM's own frozen
+  text embedder), 5-fold. **A+V+T overall acc=0.675 / macro-F1=0.675 vs Exp 1
+  A+V's 0.690/0.692** -- naive equal-weight fusion of the (identical-per-
+  sentence, emotionally uninformative) transcript slightly DILUTES the model,
+  ~1.5 pts (about one fold-sd). Age gap persists and is steeper:
+  accuracy -0.0319/decade (r=-0.393, p=0.0001), per-clip OR 0.866/decade.
+  This is the expected "no text gain on CREMA-D" result, and it sets up Exp 4:
+  it shows naive fusion of an unreliable/uninformative channel can hurt, giving
+  the confidence gate a concrete deficit to recover. Results:
+  `data/crema_d/exp2_llama7b/` (predictions/metrics/analysis on Mac; checkpoints
+  on Atlas). Text-channel *gains* still assessed on ElderReact/MPDD later.
 - [ ] **3.5 Benchmark sanity check** `[Atlas]` against published
   Emotion-LLaMA-style numbers to confirm the backbone is implemented
   correctly before any contribution is layered on.
